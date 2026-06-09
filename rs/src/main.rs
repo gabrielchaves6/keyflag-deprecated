@@ -783,12 +783,32 @@ unsafe fn show_about() {
 
 // ===================== Styled message dialog (About look) =====================
 const DLG_W: i32 = 430;
-const DLG_H: i32 = 248;
-const DLG_BTN_W: i32 = 116;
+const DLG_H: i32 = 248; // minimum dialog height (grown to fit the body)
+const DLG_BTN_W: i32 = 116; // minimum button width
 const DLG_BTN_H: i32 = 34;
+const DLG_BTN_PAD_X: i32 = 18; // horizontal text padding inside a button
+const DLG_BODY_GAP: i32 = 28; // vertical gap between the body text and the buttons
 
-unsafe fn paint_button(hdc: HDC, x: i32, y: i32, label: &str, accent: bool) -> RECT {
-    let rc = RECT { left: x, top: y, right: x + DLG_BTN_W, bottom: y + DLG_BTN_H };
+// The font used for button labels — shared by measuring and painting so widths match.
+unsafe fn button_font() -> HFONT {
+    make_font(17, 600, false)
+}
+
+// Width a button needs to fit `label`: text extent plus padding, never below the minimum.
+unsafe fn button_width(hdc: HDC, label: &str) -> i32 {
+    let font = button_font();
+    let of = SelectObject(hdc, font);
+    let mut t = wn(label);
+    let mut r = RECT::default();
+    DrawTextW(hdc, &mut t, &mut r, DT_CALCRECT | DT_SINGLELINE);
+    SelectObject(hdc, of);
+    let _ = DeleteObject(font);
+    (r.right - r.left + 2 * DLG_BTN_PAD_X).max(DLG_BTN_W)
+}
+
+// Paint one flat, slightly-rounded button `width` wide and return its rect (for hit-testing).
+unsafe fn paint_button(hdc: HDC, x: i32, y: i32, width: i32, label: &str, accent: bool) -> RECT {
+    let rc = RECT { left: x, top: y, right: x + width, bottom: y + DLG_BTN_H };
     let fill = CreateSolidBrush(if accent { rgb(56, 118, 240) } else { rgb(48, 52, 62) });
     let pen = CreatePen(PS_SOLID, 1, if accent { rgb(56, 118, 240) } else { rgb(74, 80, 92) });
     let old_b = SelectObject(hdc, fill);
@@ -849,12 +869,16 @@ extern "system" fn dialog_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let _ = DeleteObject(title_font);
                 let _ = DeleteObject(body_font);
 
+                // Buttons, bottom-right. Each is sized to its label so a longer label like
+                // "Atualizar agora" never overflows the button.
                 let by = rc.bottom - 20 - DLG_BTN_H;
-                let px = rc.right - pad - DLG_BTN_W;
-                DLG_BTN_PRIMARY = paint_button(hdc, px, by, &DLG_PRIMARY, true);
+                let pw = button_width(hdc, &DLG_PRIMARY);
+                let px = rc.right - pad - pw;
+                DLG_BTN_PRIMARY = paint_button(hdc, px, by, pw, &DLG_PRIMARY, true);
                 if !DLG_SECONDARY.is_empty() {
-                    let sx = px - 12 - DLG_BTN_W;
-                    DLG_BTN_SECONDARY = paint_button(hdc, sx, by, &DLG_SECONDARY, false);
+                    let sw = button_width(hdc, &DLG_SECONDARY);
+                    let sx = px - 12 - sw;
+                    DLG_BTN_SECONDARY = paint_button(hdc, sx, by, sw, &DLG_SECONDARY, false);
                 } else {
                     DLG_BTN_SECONDARY = RECT::default();
                 }
@@ -962,6 +986,22 @@ unsafe fn show_dialog(heading: &str, body: &str, primary: &str, secondary: &str)
     DLG_SECONDARY = secondary.to_string();
     DLG_RESULT = 0;
 
+    // Grow the dialog vertically to fit the word-wrapped body, keeping a fixed gap above the
+    // buttons — so a long prompt no longer collides with them. Floors at DLG_H.
+    let dlg_h = {
+        let screen = GetDC(None);
+        let font = make_font(17, 400, false);
+        let of = SelectObject(screen, font);
+        let mut t = wn(body);
+        let mut r = RECT { left: 0, top: 0, right: DLG_W - 2 * 28, bottom: 0 };
+        DrawTextW(screen, &mut t, &mut r, DT_LEFT | DT_WORDBREAK | DT_CALCRECT);
+        let body_h = r.bottom - r.top;
+        SelectObject(screen, of);
+        let _ = DeleteObject(font);
+        ReleaseDC(None, screen);
+        (96 + body_h + DLG_BODY_GAP + DLG_BTN_H + 20).max(DLG_H)
+    };
+
     let work = ACTIVE_WORK;
     let (cx, cy) = if work.right > work.left {
         (work.left + (work.right - work.left) / 2, work.top + (work.bottom - work.top) / 2)
@@ -974,9 +1014,9 @@ unsafe fn show_dialog(heading: &str, body: &str, primary: &str, secondary: &str)
         PCWSTR(w("KeyFlag").as_ptr()),
         WS_POPUP,
         cx - DLG_W / 2,
-        cy - DLG_H / 2,
+        cy - dlg_h / 2,
         DLG_W,
-        DLG_H,
+        dlg_h,
         None,
         None,
         hinstance,
