@@ -1,0 +1,80 @@
+name: Release
+
+# Cut a release by pushing a version tag:  git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (without leading v), e.g. 0.1.0"
+        required: true
+        default: "0.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            $v = '${{ github.ref_name }}' -replace '^v', ''
+          } else {
+            $v = '${{ github.event.inputs.version }}'
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Building version $v"
+
+      - name: Install Rust (stable MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release
+        run: cargo build --release --manifest-path rs/Cargo.toml
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" "installer\KeyFlag.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed with $LASTEXITCODE" }
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KeyFlag-Setup
+          path: installer/dist/KeyFlag-Setup.exe
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          # This repo is public, so releases/latest is readable unauthenticated and the
+          # in-app "Check for updates" can pull the installer directly from here — no
+          # separate releases repo or cross-repo PAT needed (unlike DeskFlag).
+          tag_name: ${{ github.ref_name }}
+          name: KeyFlag ${{ github.ref_name }}
+          files: installer/dist/KeyFlag-Setup.exe
+          body: |
+            ## Installing
+
+            Download **KeyFlag-Setup.exe** below and run it (per-user, no admin).
+
+            > ⚠️ **Unsigned build.** The installer isn't code-signed yet, so:
+            > - **SmartScreen** may say *"Windows protected your PC"* → click **More info → Run anyway**.
+            > - **Microsoft Defender** may quarantine the setup with a generic false positive
+            >   (`Trojan:Win32/Cloxer`), common for unsigned Inno Setup installers. If that happens,
+            >   restore it from *Virus & threat protection → Protection history*, or report it as a
+            >   false positive at <https://www.microsoft.com/wdsi/filesubmission>.
+            >
+            > The `KeyFlag.exe` itself is not flagged — only the installer wrapper.

@@ -1,0 +1,3 @@
+/* Embeds the KeyFlag icon as the executable's default icon (lowest ID), so Explorer,
+   Alt+Tab and the Windows taskbar all show it. Compiled by build.rs (MSVC builds only). */
+1 ICON "assets/keyflag.ico"

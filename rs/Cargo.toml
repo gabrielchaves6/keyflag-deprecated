@@ -1,12 +1,16 @@
 [package]
-name = "keyboardflag"
+name = "keyflag"
 version = "0.1.0"
 edition = "2021"
 description = "Single-layout keyboard enforcer for Windows (US-International or ABNT2), tray-only"
+build = "build.rs"
 
 [[bin]]
-name = "KeyboardFlag"
+name = "KeyFlag"
 path = "src/main.rs"
+
+[build-dependencies]
+embed-resource = "2"
 
 [profile.release]
 opt-level = "z"
@@ -25,9 +29,12 @@ features = [
     "Win32_UI_HiDpi",
     "Win32_UI_Shell",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
     "Win32_System_Threading",
+    "Win32_System_Com",
+    "Win32_System_Com_Urlmon",
     "Win32_Security",
 ]
 
