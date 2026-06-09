@@ -548,7 +548,7 @@ unsafe fn check_for_updates(hwnd: HWND) {
         return;
     };
 
-    let prompt = format!("A versão {latest} está disponível (você tem v{cur}).\n\nBaixar e instalar agora? O KeyFlag será fechado para concluir a atualização.");
+    let prompt = format!("A versão {latest} está disponível (você tem v{cur}).\n\nAtualizar agora? O KeyFlag será reiniciado automaticamente — sem assistente de instalação.");
     if !show_dialog("Atualização disponível", &prompt, "Atualizar agora", "Depois") {
         return;
     }
