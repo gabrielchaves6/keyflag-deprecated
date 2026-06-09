@@ -557,8 +557,12 @@ unsafe fn check_for_updates(hwnd: HWND) {
         show_dialog("Falha no download", "Não foi possível baixar o instalador. Tente novamente mais tarde.", "OK", "");
         return;
     }
+    // Run the installer silently and quit so it can replace the running KeyFlag.exe. Setup
+    // kills this instance (KillRunning), installs over it, then its [Run] entry relaunches the
+    // new build — so the lone consent click above is the whole update, no wizard.
     let setup_w = w(&setup.to_string_lossy());
-    ShellExecuteW(hwnd, PCWSTR(w("open").as_ptr()), PCWSTR(setup_w.as_ptr()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+    let args_w = w("/VERYSILENT /SUPPRESSMSGBOXES /NORESTART");
+    ShellExecuteW(hwnd, PCWSTR(w("open").as_ptr()), PCWSTR(setup_w.as_ptr()), PCWSTR(args_w.as_ptr()), PCWSTR::null(), SW_SHOWNORMAL);
     remove_tray(hwnd);
     PostQuitMessage(0);
 }

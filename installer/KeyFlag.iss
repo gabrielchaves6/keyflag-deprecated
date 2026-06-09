@@ -52,7 +52,9 @@ Name: "{group}\KeyFlag"; Filename: "{app}\KeyFlag.exe"; IconFilename: "{app}\key
 Name: "{userstartup}\KeyFlag"; Filename: "{app}\KeyFlag.exe"; IconFilename: "{app}\keyflag.ico"; Tasks: startup
 
 [Run]
-Filename: "{app}\KeyFlag.exe"; Description: "{cm:LaunchProgram,KeyFlag}"; Flags: nowait postinstall skipifsilent
+; No skipifsilent: the in-app updater runs Setup with /VERYSILENT and relies on this
+; entry to relaunch KeyFlag once the new exe is in place (one-click hands-off update).
+Filename: "{app}\KeyFlag.exe"; Description: "{cm:LaunchProgram,KeyFlag}"; Flags: nowait postinstall
 
 [CustomMessages]
 en.StartAtLogon=Start KeyFlag when I sign in to Windows
