@@ -54,8 +54,7 @@ enum Mode {
 
 // ---------- Globals (single-threaded; touched only from the message thread) ----------
 static mut MODE: Mode = Mode::UsIntl;
-static mut HKL_US: isize = 0;
-static mut HKL_ABNT: isize = 0;
+static mut HKL_TARGET: isize = 0; // HKL of the currently-enforced layout (the only one kept loaded)
 static mut TRAY_ICON: isize = 0; // current tray HICON (US/BR badge, rebuilt on mode change)
 
 static mut ABOUT_HWND: Option<HWND> = None;
@@ -151,18 +150,74 @@ fn hkl(v: isize) -> HKL {
     HKL(v as *mut c_void)
 }
 
-unsafe fn target_hkl() -> isize {
-    match MODE {
-        Mode::UsIntl => HKL_US,
-        Mode::Abnt2 => HKL_ABNT,
+fn klid_for(mode: Mode) -> &'static str {
+    match mode {
+        Mode::UsIntl => KLID_US_INTL,
+        Mode::Abnt2 => KLID_ABNT2,
     }
+}
+
+// Load (or re-load) a layout into the session and make it active; returns its HKL (0 on
+// failure). Idempotent — calling it for an already-loaded layout just returns its handle.
+unsafe fn load_layout(klid: &str) -> isize {
+    LoadKeyboardLayoutW(PCWSTR(w(klid).as_ptr()), KLF_ACTIVATE)
+        .map(|h| h.0 as isize)
+        .unwrap_or(0)
+}
+
+// Unload every loaded layout except `keep`, collapsing the session's input-method list to a
+// single entry. With only one input method, Windows hides its own tray language indicator, so
+// KeyFlag's US/BR badge is the only one left. Called on mode apply (startup + toggle), NOT on
+// the timer — so it doesn't continuously fight apps (RDP/VMs/IMEs) that load their own layout.
+unsafe fn unload_others(keep: isize) {
+    if keep == 0 {
+        return; // never unload everything — we'd be left with no layout at all
+    }
+    let mut list = [HKL::default(); 32];
+    let n = GetKeyboardLayoutList(Some(&mut list));
+    for h in list.iter().take(n.max(0) as usize) {
+        if !h.0.is_null() && h.0 as isize != keep {
+            let _ = UnloadKeyboardLayout(*h);
+        }
+    }
+}
+
+// Persist a single input method in the user profile (HKCU\Keyboard Layout\Preload) so the
+// indicator stays gone across logons — otherwise Windows reloads the old 2-method list at
+// sign-in and the indicator flickers back until KeyFlag starts and re-collapses it.
+unsafe fn set_preload_single(mode: Mode) {
+    let sk = w("Keyboard Layout\\Preload");
+    let mut hkey = HKEY::default();
+    let rc = RegCreateKeyExW(
+        HKEY_CURRENT_USER,
+        PCWSTR(sk.as_ptr()),
+        0,
+        PCWSTR::null(),
+        REG_OPTION_NON_VOLATILE,
+        KEY_SET_VALUE,
+        None,
+        &mut hkey,
+        None,
+    );
+    if rc != ERROR_SUCCESS {
+        return;
+    }
+    // "1" = the chosen layout; drop any other numbered entries (the second method, etc.).
+    let data = w(klid_for(mode));
+    let bytes = core::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 2);
+    let _ = RegSetValueExW(hkey, PCWSTR(w("1").as_ptr()), 0, REG_SZ, Some(bytes));
+    for i in 2..=9 {
+        let name = w(&i.to_string());
+        let _ = RegDeleteValueW(hkey, PCWSTR(name.as_ptr()));
+    }
+    let _ = RegCloseKey(hkey);
 }
 
 // Snap the foreground window back to the chosen layout if it has drifted. Cheap (a couple of
 // syscalls) and a no-op when already correct, so it's safe to call on a tight timer and on
 // every foreground change.
 unsafe fn enforce() {
-    let target = target_hkl();
+    let target = HKL_TARGET;
     if target == 0 {
         return;
     }
@@ -206,19 +261,26 @@ unsafe fn apply_mode(hwnd: HWND, mode: Mode) {
     MODE = mode;
     write_mode(mode);
 
-    let target = target_hkl();
-    // Default input language for newly-created threads/processes.
-    let mut h = target;
-    let _ = SystemParametersInfoW(
-        SPI_SETDEFAULTINPUTLANG,
-        0,
-        Some(&mut h as *mut _ as *mut c_void),
-        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-    );
-    let _ = ActivateKeyboardLayout(hkl(target), ACTIVATE_KEYBOARD_LAYOUT_FLAGS(0));
-    // Flip every open window now, then make sure the focused one is correct.
-    let _ = EnumWindows(Some(broadcast_proc), LPARAM(target));
-    enforce();
+    let target = load_layout(klid_for(mode));
+    HKL_TARGET = target;
+    if target != 0 {
+        // Default input language for newly-created threads/processes.
+        let mut h = target;
+        let _ = SystemParametersInfoW(
+            SPI_SETDEFAULTINPUTLANG,
+            0,
+            Some(&mut h as *mut _ as *mut c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+        let _ = ActivateKeyboardLayout(hkl(target), ACTIVATE_KEYBOARD_LAYOUT_FLAGS(0));
+        // Flip every open window now, then make sure the focused one is correct.
+        let _ = EnumWindows(Some(broadcast_proc), LPARAM(target));
+        enforce();
+        // Drop the other layout so the session has a single input method (hides the OS
+        // indicator), and persist that single method for future logons.
+        unload_others(target);
+        set_preload_single(mode);
+    }
 
     refresh_tray(hwnd);
 }
@@ -978,14 +1040,8 @@ fn main() -> Result<()> {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
-        // Load both target layouts into the session so either can be activated/forced.
-        HKL_US = LoadKeyboardLayoutW(PCWSTR(w(KLID_US_INTL).as_ptr()), KLF_ACTIVATE)
-            .map(|h| h.0 as isize)
-            .unwrap_or(0);
-        HKL_ABNT = LoadKeyboardLayoutW(PCWSTR(w(KLID_ABNT2).as_ptr()), KLF_ACTIVATE)
-            .map(|h| h.0 as isize)
-            .unwrap_or(0);
-
+        // Layouts are loaded on demand by apply_mode (called below), which also collapses the
+        // session to a single input method so the OS keyboard indicator stays hidden.
         MODE = read_mode();
 
         let app_icon = load_app_icon();
