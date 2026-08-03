@@ -20,7 +20,7 @@ use windows::Win32::System::Com::Urlmon::URLDownloadToFileW;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
 use windows::Win32::System::Registry::*;
-use windows::Win32::System::Threading::CreateMutexW;
+use windows::Win32::System::Threading::{CreateMutexW, GetCurrentThreadId};
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -53,6 +53,10 @@ enum Mode {
 }
 
 // ---------- Globals (single-threaded; touched only from the message thread) ----------
+// "TaskbarCreated": broadcast by the shell every time it recreates the notification area
+// (explorer restart/crash). Its id is assigned at runtime, so it can't be a match arm constant.
+static mut WM_TASKBARCREATED: u32 = 0;
+
 static mut MODE: Mode = Mode::UsIntl;
 static mut HKL_TARGET: isize = 0; // HKL of the currently-enforced layout (the only one kept loaded)
 static mut TRAY_ICON: isize = 0; // current tray HICON (US/BR badge, rebuilt on mode change)
@@ -401,8 +405,13 @@ unsafe fn tooltip() -> &'static str {
     }
 }
 
+// Register the tray icon. Also called again on every TaskbarCreated, so it has to be
+// re-entrant: drop the previous badge instead of leaking one HICON per shell restart.
 unsafe fn add_tray(hwnd: HWND) {
     let icon = mode_icon(MODE);
+    if TRAY_ICON != 0 {
+        let _ = DestroyIcon(HICON(TRAY_ICON as *mut c_void));
+    }
     TRAY_ICON = icon.0 as isize;
     let mut nid = tray_base(hwnd);
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
@@ -434,6 +443,28 @@ unsafe fn remove_tray(hwnd: HWND) {
     let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
 }
 
+// SetForegroundWindow refuses when the caller doesn't own the foreground — and with a custom
+// shell (Seelen UI) the click that opens our menu is delivered by an always-on-top flyout that
+// keeps it. TrackPopupMenu on a window that never became foreground shows a menu that closes
+// on the first mouse move. Borrowing the foreground thread's input queue lifts the restriction.
+unsafe fn force_foreground(hwnd: HWND) {
+    if SetForegroundWindow(hwnd).as_bool() {
+        return;
+    }
+    let fg = GetForegroundWindow();
+    if fg.0.is_null() {
+        return;
+    }
+    let fg_tid = GetWindowThreadProcessId(fg, None);
+    let our_tid = GetCurrentThreadId();
+    if fg_tid == 0 || fg_tid == our_tid {
+        return;
+    }
+    let _ = AttachThreadInput(fg_tid, our_tid, TRUE);
+    let _ = SetForegroundWindow(hwnd);
+    let _ = AttachThreadInput(fg_tid, our_tid, FALSE);
+}
+
 unsafe fn show_tray_menu(hwnd: HWND) {
     let menu = CreatePopupMenu().unwrap_or_default();
     let _ = AppendMenuW(menu, MF_STRING, ID_US, PCWSTR(w("US International").as_ptr()));
@@ -448,8 +479,11 @@ unsafe fn show_tray_menu(hwnd: HWND) {
 
     let mut pt = POINT::default();
     let _ = GetCursorPos(&mut pt);
-    let _ = SetForegroundWindow(hwnd);
+    force_foreground(hwnd);
     let cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, 0, hwnd, None);
+    // Without this the menu doesn't dismiss on the next click outside it (KB135788): the
+    // owner has to receive one more message after TrackPopupMenu returns.
+    let _ = PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
     let _ = DestroyMenu(menu);
     match cmd.0 as usize {
         ID_US => apply_mode(hwnd, Mode::UsIntl),
@@ -1051,6 +1085,12 @@ unsafe fn show_dialog(heading: &str, body: &str, primary: &str, secondary: &str)
 // ---------- Window proc (hidden message window) ----------
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
+        // The shell dropped every icon when it recreated the tray — put ours back, or KeyFlag
+        // keeps enforcing the layout with no visible badge and no way to reach its menu.
+        if msg != 0 && msg == WM_TASKBARCREATED {
+            add_tray(hwnd);
+            return LRESULT(0);
+        }
         match msg {
             WM_DESTROY => {
                 PostQuitMessage(0);
@@ -1144,6 +1184,14 @@ fn main() -> Result<()> {
         )?;
         setup_chrome(about_hwnd);
         ABOUT_HWND = Some(about_hwnd);
+
+        // Learn the shell's "recreate your icon" broadcast before adding the icon, so a shell
+        // restart racing our startup can't slip through. ChangeWindowMessageFilterEx keeps UIPI
+        // from dropping the broadcast if the shell ever runs at a different integrity level.
+        WM_TASKBARCREATED = RegisterWindowMessageW(PCWSTR(w("TaskbarCreated").as_ptr()));
+        if WM_TASKBARCREATED != 0 {
+            let _ = ChangeWindowMessageFilterEx(hwnd, WM_TASKBARCREATED, MSGFLT_ALLOW, None);
+        }
 
         add_tray(hwnd);
         // Apply the persisted mode immediately on startup.
