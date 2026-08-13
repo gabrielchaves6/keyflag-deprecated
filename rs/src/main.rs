@@ -1,4 +1,11 @@
 #![windows_subsystem = "windows"]
+// DEPRECATED. This executable is no longer maintained: DeskFlag absorbed the enforcer in v0.2.46
+// (13 August 2026), the way it absorbed DeskSwipe before it. The living copy of everything below
+// is rs/src/keyboard.rs in gabrielchaves6/desk_flag, on a thread of its own, with the US/BR badge
+// as an element on the taskbar card rather than a tray icon of its own — and with an off switch
+// that puts HKCU\Keyboard Layout\Preload back, which this one never did. Do not run both: two
+// enforcers take turns correcting each other several times a second. See README.md.
+//
 // KeyFlag — keep Windows on a single keyboard layout, enforced globally.
 //
 // Windows' keyboard handling mixes layouts per-window, re-adds them, and exposes a dozen

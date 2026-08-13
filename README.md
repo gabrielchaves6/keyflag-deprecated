@@ -6,6 +6,33 @@
 
 <p align="center">Keep Windows on a <b>single keyboard layout</b>, enforced globally, from a tray icon.</p>
 
+---
+
+## ⚠️ Deprecated — KeyFlag is part of DeskFlag now
+
+**This repository is no longer maintained and no further releases will be cut here.** As of
+**DeskFlag v0.2.46** (13 August 2026) the layout enforcer is a DeskFlag feature, living in
+`rs/src/keyboard.rs` in [gabrielchaves6/desk_flag](https://github.com/gabrielchaves6/desk_flag) on a
+thread of its own. The US/BR badge is an element on DeskFlag's taskbar card instead of a tray icon
+of its own; everything else — the About window, the dialogs, the updater — DeskFlag already had.
+
+**What to do:** install DeskFlag, then uninstall KeyFlag (Add or remove programs, or `unins000.exe`
+in `%LOCALAPPDATA%\Programs\KeyFlag`). Running both is worse than running neither: two enforcers
+take turns correcting each other several times a second and neither wins. DeskFlag asks first if it
+finds this one running.
+
+**One thing got better on the way over.** This app collapsed `HKCU\Keyboard Layout\Preload` to a
+single entry and never put it back — switching modes was the only thing its menu could undo.
+DeskFlag writes that list down *before* it changes it and restores it when you switch the hold off,
+reloading the layouts into the running session so you get them back without signing out. If KeyFlag
+has already collapsed your list, though, the list you had before is gone: it was never saved
+anywhere. Re-add the layouts you want in Windows' language settings **before** switching DeskFlag's
+hold on, and that is what it will remember.
+
+The code below is left up for reference.
+
+---
+
 Written in Rust (`windows-rs`). A sibling of [DeskFlag](https://github.com/gabrielchaves6/desk_flag).
 
 Windows' keyboard handling mixes layouts per-window, silently re-adds them, and scatters
